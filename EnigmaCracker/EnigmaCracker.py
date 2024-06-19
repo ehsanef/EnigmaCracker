@@ -1,9 +1,9 @@
-# EnigmaCracker
+import asyncio
+import aiohttp
 import subprocess
 import sys
 import os
 import platform
-import requests
 import logging
 import time
 from dotenv import load_dotenv
@@ -121,49 +121,48 @@ def bip44_BTC_seed_to_address(seed):
     return bip44_addr_ctx.PublicKey().ToAddress()
 
 
-def check_ETH_balance(address, etherscan_api_key, retries=3, delay=5):
+async def check_ETH_balance(session, address, etherscan_api_key, retries=3, delay=5):
     # Etherscan API endpoint to check the balance of an address
     api_url = f"https://api.etherscan.io/api?module=account&action=balance&address={address}&tag=latest&apikey={etherscan_api_key}"
 
     for attempt in range(retries):
         try:
-            # Make a request to the Etherscan API
-            response = requests.get(api_url)
-            data = response.json()
+            async with session.get(api_url) as response:
+                data = await response.json()
 
-            # Check if the request was successful
-            if data["status"] == "1":
-                # Convert Wei to Ether (1 Ether = 10^18 Wei)
-                balance = int(data["result"]) / 1e18
-                return balance
-            else:
-                logging.error("Error getting balance: %s", data["message"])
-                return 0
+                # Check if the request was successful
+                if data["status"] == "1":
+                    # Convert Wei to Ether (1 Ether = 10^18 Wei)
+                    balance = int(data["result"]) / 1e18
+                    return balance
+                else:
+                    logging.error("Error getting balance: %s", data["message"])
+                    return 0
         except Exception as e:
             if attempt < retries - 1:
                 logging.error(
                     f"Error checking balance, retrying in {delay} seconds: {str(e)}"
                 )
-                time.sleep(delay)
+                await asyncio.sleep(delay)
             else:
                 logging.error("Error checking balance: %s", str(e))
                 return 0
 
 
-def check_BTC_balance(address, retries=3, delay=5):
+async def check_BTC_balance(session, address, retries=3, delay=5):
     # Check the balance of the address
     for attempt in range(retries):
         try:
-            response = requests.get(f"https://blockchain.info/balance?active={address}")
-            data = response.json()
-            balance = data[address]["final_balance"]
-            return balance / 100000000  # Convert satoshi to bitcoin
+            async with session.get(f"https://blockchain.info/balance?active={address}") as response:
+                data = await response.json()
+                balance = data[address]["final_balance"]
+                return balance / 100000000  # Convert satoshi to bitcoin
         except Exception as e:
             if attempt < retries - 1:
                 logging.error(
                     f"Error checking balance, retrying in {delay} seconds: {str(e)}"
                 )
-                time.sleep(delay)
+                await asyncio.sleep(delay)
             else:
                 logging.error("Error checking balance: %s", str(e))
                 return 0
@@ -177,45 +176,44 @@ def write_to_file(seed, BTC_address, BTC_balance, ETH_address, ETH_balance):
         logging.info(f"Written to file: {log_message}")
 
 
-def main():
+async def main():
     global wallets_scanned
-    try:
-        while True:
-            seed = bip()
-            # BTC
-            BTC_address = bip44_BTC_seed_to_address(seed)
-            BTC_balance = check_BTC_balance(BTC_address)
+    etherscan_api_key = os.getenv("ETHERSCAN_API_KEY")
+    if not etherscan_api_key:
+        raise ValueError(
+            "The Etherscan API key must be set in the environment variables."
+        )
 
-            logging.info(f"Seed: {seed}")
-            logging.info(f"BTC address: {BTC_address}")
-            logging.info(f"BTC balance: {BTC_balance} BTC")
-            logging.info("")
+    async with aiohttp.ClientSession() as session:
+        try:
+            while True:
+                seed = bip()
+                # BTC
+                BTC_address = bip44_BTC_seed_to_address(seed)
+                BTC_balance = await check_BTC_balance(session, BTC_address)
 
-            # ETH
-            ETH_address = bip44_ETH_wallet_from_seed(seed)
-            ###!
-            etherscan_api_key = os.getenv("ETHERSCAN_API_KEY")
-            if not etherscan_api_key:
-                raise ValueError(
-                    "The Etherscan API key must be set in the environment variables."
-                )
-            ###!
-            ETH_balance = check_ETH_balance(ETH_address, etherscan_api_key)
-            logging.info(f"ETH address: {ETH_address}")
-            logging.info(f"ETH balance: {ETH_balance} ETH")
+                logging.info(f"Seed: {seed}")
+                logging.info(f"BTC address: {BTC_address}")
+                logging.info(f"BTC balance: {BTC_balance} BTC")
+                logging.info("")
 
-            # Increment the counter and update the CMD title
-            wallets_scanned += 1
-            update_cmd_title()
+                # ETH
+                ETH_address = bip44_ETH_wallet_from_seed(seed)
+                ETH_balance = await check_ETH_balance(session, ETH_address, etherscan_api_key)
+                logging.info(f"ETH address: {ETH_address}")
+                logging.info(f"ETH balance: {ETH_balance} ETH")
 
-            # Check if the address has a balance
-            if BTC_balance > 0 or ETH_balance > 0:
-                logging.info("(!) Wallet with balance found!")
-                write_to_file(seed, BTC_address, BTC_balance, ETH_address, ETH_balance)
+                # Increment the counter and update the CMD title
+                wallets_scanned += 1
+                update_cmd_title()
 
-    except KeyboardInterrupt:
-        logging.info("Program interrupted by user. Exiting...")
+                # Check if the address has a balance
+                if BTC_balance > 0 or ETH_balance > 0:
+                    logging.info("(!) Wallet with balance found!")
+                    write_to_file(seed, BTC_address, BTC_balance, ETH_address, ETH_balance)
 
+        except KeyboardInterrupt:
+            logging.info("Program interrupted by user. Exiting...")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
